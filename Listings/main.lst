@@ -1,0 +1,671 @@
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 1   
+
+
+C51 COMPILER V9.55, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN .\Objects\main.obj
+COMPILER INVOKED BY: D:\Keil_v5\C51\BIN\C51.EXE main.c LARGE OPTIMIZE(8,SPEED) BROWSE DEBUG OBJECTEXTEND PRINT(.\Listing
+                    -s\main.lst) OBJECT(.\Objects\main.obj)
+
+line level    source
+
+   1          #include <reg51.h>       
+   2          #include "stdio.h"
+   3          #include "StateMachine.h"
+   4          #include <intrins.h>
+   5          #include <math.h>
+   6          
+   7          #define uchar unsigned char
+   8          #define uint unsigned int
+   9          sbit EN = P2 ^7;  
+  10          sbit RS = P2 ^6;  
+  11          sbit RW = P2 ^5;  
+  12          
+  13          sbit K1 = P1 ^0;
+  14          sbit K2 = P1 ^1;     
+  15          sbit K3 = P1 ^2;
+  16          sbit K4 = P1 ^3;
+  17          sbit K5 = P1 ^4;
+  18          sbit K6 = P1 ^5;
+  19          sbit K7 = P1 ^6;
+  20          sbit K8 = P1 ^7; 
+  21          
+  22          uchar KEY_CODE[] = {
+  23              0xee, 0xde, 0xbe, 0x7e,
+  24              0xed, 0xdd, 0xbd, 0x7d,
+  25              0xeb, 0xdb, 0xbb, 0x7b,
+  26              0xe7, 0xd7, 0xb7, 0x77
+  27          };
+  28          
+  29          uchar*ops = "123+456-789*.0=/";
+  30          double tmp;
+  31          
+  32          /**
+  33          1 2 3 +
+  34          4 5 6 -
+  35          7 8 9 *
+  36          . 0 = /
+  37          
+  38          ( ) ~ c
+  39          */
+  40          
+  41          StateMachine machine;  // * 状态机
+  42          
+  43          void scanf_matrix_keyboard(StateMachine_t machine, uchar *var);
+  44          void delay5MS();
+  45          void delay100MS();
+  46          void writeCMD(uchar com);
+  47          void showData(uchar dat);
+  48          void init();
+  49          void clear();
+  50          
+  51          
+  52          void main() {
+  53   1          uchar num;
+  54   1          init();    // * 初始化
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 2   
+
+  55   1          while (1) {
+  56   2              scanf_matrix_keyboard(&machine, &num); // * 读入字符 | 重置状态机
+  57   2              if (num == 0xff) { // * 强制刷新
+  58   3                  resetStateMachine(&machine);
+  59   3                  clear();
+  60   3                  continue;
+  61   3              }
+  62   2              stateMachineDoAction(&machine, num); // * 状态机执行动作
+  63   2          }
+  64   1      }
+  65          
+  66          
+  67          /**
+  68           * * 状态输出
+  69           */
+  70          void stateToOutput(const State_t state) {
+  71   1          char buf[MAX_QUEUE_LENGTH * 2];
+  72   1              uchar m=0;
+  73   1          sprintf(buf, "%g", state->STACK[state->stackTail].operand[0]);
+  74   1          while (buf[m++]);
+  75   1          writeCMD(0x4f + 0x80);
+  76   1          writeCMD(0x04);
+  77   1          --m;
+  78   1          while (m--) showData(buf[m]);
+  79   1      }
+  80          
+  81          /**
+  82           * ! 提示错误 
+  83           */
+  84          void stateShowError() {
+  85   1          char*err="ERROR";
+  86   1          clear();
+  87   1          delay5MS();
+  88   1          while (*err) showData(*err++);
+  89   1      }
+  90          
+  91          
+  92          /**
+  93           * * 将队列中的数字写入到数字栈中
+  94           * @param state 状态指针
+  95           * @param locationOperand 数字栈的位置
+  96           */ 
+  97          void statePushOperArray(const State_t state, int locationOperand) {
+  98   1          if (state->bef != ')') {
+  99   2              uchar x;
+ 100   2              double total = 0;
+ 101   2              sscanf(state->QUEUE + (state->QUEUE[0] == '~'?1:0), "%lf", &total);
+ 102   2              state->STACK[state->stackTail].operand[locationOperand] = 
+ 103   2                  state->QUEUE[0] == '~'? sqrt(total): total;
+ 104   2              for (x = 0; x < state->queueTail; ++x) state->QUEUE[x] = 0;
+ 105   2              state->queueTail = 0;
+ 106   2          }
+ 107   1      }
+ 108          
+ 109          
+ 110          /**
+ 111           * * operand[0] <operator1> operand[1] -> operand[0]
+ 112           * @param state 状态指针
+ 113           */ 
+ 114          int stateFirstCalculate(State_t state) {
+ 115   1          double ans, 
+ 116   1                 num1 = state->STACK[state->stackTail].operand[0],
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 3   
+
+ 117   1                 num2 = state->STACK[state->stackTail].operand[1];
+ 118   1          uchar op = state->STACK[state->stackTail].operator1;
+ 119   1          switch (op) {
+ 120   2              case '+':
+ 121   2                  ans = num1 + num2;
+ 122   2                  break;
+ 123   2              case '-':
+ 124   2                  ans = num1 - num2;
+ 125   2                  break;
+ 126   2              case '*':
+ 127   2                  ans = num1 * num2;
+ 128   2                  break;
+ 129   2              case '/':
+ 130   2                  if (-1e-5 < num2 && num2 < 1e-5) return 0;
+ 131   2                  else ans = num1 / num2;
+ 132   2                  break;
+ 133   2          }
+ 134   1          state->STACK[state->stackTail].operand[0] = ans;
+ 135   1          return 1;
+ 136   1      }
+ 137          
+ 138          
+ 139          /**
+ 140           * * operand[1] <operator2> operand[2] -> operand[1]
+ 141           * @param state 状态指针
+ 142           */ 
+ 143          int stateLastCalculate(State_t state) {
+ 144   1          double ans, 
+ 145   1                 num1 = state->STACK[state->stackTail].operand[1],
+ 146   1                 num2 = state->STACK[state->stackTail].operand[2];
+ 147   1          uchar op = state->STACK[state->stackTail].operator2;
+ 148   1          switch (op) {
+ 149   2              case '+':
+ 150   2                  ans = num1 + num2;
+ 151   2                  break;
+ 152   2              case '-':
+ 153   2                  ans = num1 - num2;
+ 154   2                  break;
+ 155   2              case '*':
+ 156   2                  ans = num1 * num2;
+ 157   2                  break;
+ 158   2              case '/':
+ 159   2                  if (-1e-5 < num2 && num2 < 1e-5) return 0;
+ 160   2                  else ans = num1 / num2;
+ 161   2                  break;
+ 162   2          }
+ 163   1          state->STACK[state->stackTail].operand[1] = ans;
+ 164   1          return 1;
+ 165   1      }
+ 166          
+ 167          /**
+ 168           * * 状态动作函数1 [初始状态]
+ 169           * @param state 状态指针
+ 170           * @param condition 新的字符
+ 171           */ 
+ 172          int action1(State_t state, unsigned char condition) {
+ 173   1          clear();
+ 174   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 175   2              state->QUEUE[state->queueTail++] = condition;
+ 176   2              showData(condition);
+ 177   2              return 2;
+ 178   2          } else if (condition == '(') {
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 4   
+
+ 179   2              ++state->stackTail;
+ 180   2              resetStackNode(state->STACK + state->stackTail);
+ 181   2              showData(condition);
+ 182   2              return 9;
+ 183   2          } else if (condition == '~') {
+ 184   2              state->QUEUE[state->queueTail++] = condition;
+ 185   2              showData(condition);
+ 186   2              return 9;
+ 187   2          } else if (condition == '.') {
+ 188   2              state->QUEUE[state->queueTail++] = condition;
+ 189   2              showData(condition);
+ 190   2              return 2;
+ 191   2          } else return -1;
+ 192   1      }
+ 193          
+ 194          /**
+ 195           * * 状态动作函数2 [数字]
+ 196           * @param state 状态指针
+ 197           * @param condition 新的字符
+ 198           */ 
+ 199          int action2(State_t state, unsigned char condition) {
+ 200   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 201   2              state->QUEUE[state->queueTail++] = condition;
+ 202   2              showData(condition);
+ 203   2              return 2;
+ 204   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 205   2              statePushOperArray(state, 0);
+ 206   2              state->STACK[state->stackTail].operator1 = condition;
+ 207   2              showData(condition);
+ 208   2              return condition == '+' || condition == '-'? 3: condition == '*'? 4 : 5;
+ 209   2          } else if (condition == '.') {
+ 210   2              state->QUEUE[state->queueTail++] = condition;
+ 211   2              showData(condition);
+ 212   2              return 2;
+ 213   2          } else if (condition == '=') {
+ 214   2              statePushOperArray(state, 0);
+ 215   2              showData(condition);
+ 216   2              stateToOutput(state);
+ 217   2              return 1;
+ 218   2          } else return -1;
+ 219   1      }
+ 220          
+ 221          int doubleCheck(double val, double aim) {
+ 222   1          return aim - 1e-5 < val && val < aim + 1e-5? 1: 0;
+ 223   1      }
+ 224          
+ 225          /**
+ 226           * * 状态动作函数3 [+ -]
+ 227           * @param state 状态指针
+ 228           * @param condition 新的字符
+ 229           */ 
+ 230          int action3(State_t state, unsigned char condition) {
+ 231   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 232   2              if (state->bef == ')') return -1;
+ 233   2              state->QUEUE[state->queueTail++] = condition;
+ 234   2              showData(condition);
+ 235   2              return 3;
+ 236   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 237   2              if (state->bef == '+' || state->bef == '-' || state->bef == '*' || state->bef == '/') return -1;
+ 238   2              statePushOperArray(state, 1);
+ 239   2              if ((condition == '+' || condition == '-') && !stateFirstCalculate(state)) return -1;
+ 240   2              if(condition == '+' || condition == '-') state->STACK[state->stackTail].operator1 = condition;
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 5   
+
+ 241   2              else state->STACK[state->stackTail].operator2 = condition;
+ 242   2              showData(condition);
+ 243   2              return condition == '+' || condition == '-'? 3: condition == '*'? 6 : 7;
+ 244   2          } else if (condition == '.' || condition == '~') {
+ 245   2              if (state->QUEUE[0] == condition) return -1;
+ 246   2              state->QUEUE[state->queueTail++] = condition;
+ 247   2              showData(condition);
+ 248   2              return 3;
+ 249   2          } else if (condition == '=') {
+ 250   2              statePushOperArray(state, 1);
+ 251   2              showData(condition);
+ 252   2              if ((!doubleCheck(state->STACK[state->stackTail-1].operand[2], 1) || state->lastIndex == 6 || stat
+             -e->lastIndex == 7) && !stateLastCalculate(state)) return -1;
+ 253   2              if (!stateFirstCalculate(state)) return -1;
+ 254   2              stateToOutput(state);
+ 255   2              return 1;
+ 256   2          } else if (condition == '(') {
+ 257   2              ++state->stackTail;
+ 258   2              resetStackNode(state->STACK + state->stackTail);
+ 259   2              showData(condition);
+ 260   2              return 9;
+ 261   2          } else if (condition == ')') {
+ 262   2              statePushOperArray(state, 1);
+ 263   2              if(!stateFirstCalculate(state)) return -1;
+ 264   2              if (!doubleCheck(state->STACK[state->stackTail-1].operand[1], 0) && 
+ 265   2                  doubleCheck(state->STACK[state->stackTail-1].operand[2], 1)) {
+ 266   3                  if (state->STACK[state->stackTail-1].operator2 == '*')
+ 267   3                  state->STACK[state->stackTail-1].operand[2] = state->STACK[state->stackTail].operand[0];
+ 268   3                  else {
+ 269   4                      tmp = state->STACK[state->stackTail-1].operand[1];
+ 270   4                      state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 271   4                      state->STACK[state->stackTail-1].operand[2] = tmp;
+ 272   4                  }
+ 273   3              }
+ 274   2              else state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 275   2              --state->stackTail;
+ 276   2              showData(condition);
+ 277   2              return 3;
+ 278   2          } else  return -1;
+ 279   1      }
+ 280          
+ 281          /**
+ 282           * * 状态动作函数4 [*]
+ 283           * @param state 状态指针
+ 284           * @param condition 新的字符
+ 285           */ 
+ 286          int action4(State_t state, unsigned char condition) {
+ 287   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 288   2              if (state->bef == ')') return -1;
+ 289   2              state->QUEUE[state->queueTail++] = condition;
+ 290   2              showData(condition);
+ 291   2              return 4;
+ 292   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 293   2              if (state->bef == '+' || state->bef == '-' || state->bef == '*' || state->bef == '/') return -1;
+ 294   2              statePushOperArray(state, 1);
+ 295   2              if(!stateFirstCalculate(state)) return -1;
+ 296   2              state->STACK[state->stackTail].operator1 = condition;
+ 297   2              showData(condition);
+ 298   2              return condition == '+' || condition == '-'? 3: condition == '*'? 4 : 5;
+ 299   2          } else if (condition == '.' || condition == '~') {
+ 300   2              if (state->QUEUE[0] == condition) return -1;
+ 301   2              state->QUEUE[state->queueTail++] = condition;
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 6   
+
+ 302   2              return 4;
+ 303   2          } else if (condition == '=') {
+ 304   2              statePushOperArray(state, 1);
+ 305   2              showData(condition);
+ 306   2              if (!stateFirstCalculate(state)) return -1;
+ 307   2              stateToOutput(state);
+ 308   2              return 1;
+ 309   2          } else if (condition == '(') {
+ 310   2              ++state->stackTail;
+ 311   2              resetStackNode(state->STACK + state->stackTail);
+ 312   2              showData(condition);
+ 313   2              return 9;
+ 314   2          } else if (condition == ')') {
+ 315   2              statePushOperArray(state, 1);
+ 316   2              if (!stateFirstCalculate(state)) return -1;
+ 317   2              state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 318   2              --state->stackTail;
+ 319   2              showData(condition);
+ 320   2              return 3;
+ 321   2          } else return -1;
+ 322   1      }
+ 323          
+ 324          /**
+ 325           * * 状态动作函数5 [/]
+ 326           * @param state 状态指针
+ 327           * @param condition 新的字符
+ 328           */ 
+ 329          int action5(State_t state, unsigned char condition) {
+ 330   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 331   2              if (state->bef == ')') return -1;
+ 332   2              state->QUEUE[state->queueTail++] = condition;
+ 333   2              showData(condition);
+ 334   2              return 5;
+ 335   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 336   2              if (state->bef == '+' || state->bef == '-' || state->bef == '*' || state->bef == '/') return -1;
+ 337   2              statePushOperArray(state, 1);
+ 338   2              if(!stateFirstCalculate(state)) return -1;
+ 339   2              state->STACK[state->stackTail].operator1 = condition;
+ 340   2              showData(condition);
+ 341   2              return condition == '+' || condition == '-'? 3: condition == '*'? 4 : 5;
+ 342   2          } else if (condition == '.' || condition == '~') {
+ 343   2              if (state->QUEUE[0] == condition) return -1;
+ 344   2              state->QUEUE[state->queueTail++] = condition;
+ 345   2              return 5;
+ 346   2          } else if (condition == '=') {
+ 347   2              statePushOperArray(state, 1);
+ 348   2              showData(condition);
+ 349   2              if (!stateFirstCalculate(state)) return -1;
+ 350   2              stateToOutput(state);
+ 351   2              return 1;
+ 352   2          } else if (condition == '(') {
+ 353   2              ++state->stackTail;
+ 354   2              resetStackNode(state->STACK + state->stackTail);
+ 355   2              showData(condition);
+ 356   2              return 9;
+ 357   2          } else if (condition == ')') {
+ 358   2              statePushOperArray(state, 1);
+ 359   2              if (!stateFirstCalculate(state)) return -1;
+ 360   2              state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 361   2              --state->stackTail;
+ 362   2              showData(condition);
+ 363   2              return 3;
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 7   
+
+ 364   2          } else return -1;
+ 365   1      }
+ 366          
+ 367          /**
+ 368           * * 状态动作函数6 [*]
+ 369           * @param state 状态指针
+ 370           * @param condition 新的字符
+ 371           */ 
+ 372          int action6(State_t state, unsigned char condition) {
+ 373   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 374   2              if (state->bef == ')') return -1;
+ 375   2              state->QUEUE[state->queueTail++] = condition;
+ 376   2              showData(condition);
+ 377   2              return 6;
+ 378   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 379   2              if (state->bef == '+' || state->bef == '-' || state->bef == '*' || state->bef == '/') return -1;
+ 380   2              statePushOperArray(state, 2);
+ 381   2              if (!stateLastCalculate(state)) return -1;
+ 382   2              if ((condition=='+' || condition == '-') && !stateFirstCalculate(state)) return -1;
+ 383   2              if (condition == '+' || condition == '-') state->STACK[state->stackTail].operator1 = condition;
+ 384   2              else state->STACK[state->stackTail].operator2 = condition;
+ 385   2              showData(condition);
+ 386   2              return condition == '+' || condition == '-'? 3: condition == '*'? 6: 7;
+ 387   2          } else if (condition == '.' || condition == '~') {
+ 388   2              if (state->QUEUE[0] == condition) return -1;
+ 389   2              state->QUEUE[state->queueTail++] = condition;
+ 390   2              showData(condition);
+ 391   2              return 6;
+ 392   2          } else if (condition == '=') {
+ 393   2              statePushOperArray(state, 2);
+ 394   2              showData(condition);
+ 395   2              if (!stateLastCalculate(state)) return -1;
+ 396   2              if (!stateFirstCalculate(state)) return -1;
+ 397   2              stateToOutput(state);
+ 398   2              return 1;
+ 399   2          } else if (condition == '(') {
+ 400   2              ++state->stackTail;
+ 401   2              resetStackNode(state->STACK + state->stackTail);
+ 402   2              showData(condition);
+ 403   2              return 9;
+ 404   2          } else if (condition == ')') {
+ 405   2              statePushOperArray(state, 2);
+ 406   2              if (!stateLastCalculate(state)) return -1;
+ 407   2              if (!stateFirstCalculate(state)) return -1;
+ 408   2              state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 409   2              --state->stackTail;
+ 410   2              showData(condition);
+ 411   2              return 3;
+ 412   2          } else return -1;
+ 413   1      }
+ 414          
+ 415          /**
+ 416           * * 状态动作函数7 [/]
+ 417           * @param state 状态指针
+ 418           * @param condition 新的字符
+ 419           */ 
+ 420          int action7(State_t state, unsigned char condition) {
+ 421   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 422   2              if (state->bef == ')') return -1;
+ 423   2              state->QUEUE[state->queueTail++] = condition;
+ 424   2              showData(condition);
+ 425   2              return 7;
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 8   
+
+ 426   2          } else if (condition == '+' || condition == '-' || condition == '*' || condition == '/') {
+ 427   2              if (state->bef == '+' || state->bef == '-' || state->bef == '*' || state->bef == '/') return -1;
+ 428   2              statePushOperArray(state, 2);
+ 429   2              if (!stateLastCalculate(state)) return -1;
+ 430   2              if ((condition=='+' || condition == '-') && !stateFirstCalculate(state)) return -1;
+ 431   2              if (condition == '+' || condition == '-') state->STACK[state->stackTail].operator1 = condition;
+ 432   2              else state->STACK[state->stackTail].operator2 = condition;
+ 433   2              showData(condition);
+ 434   2              return condition == '+' || condition == '-'? 3: condition == '*'? 6: 7;
+ 435   2          } else if (condition == '.' || condition == '~') {
+ 436   2              if (state->QUEUE[0] == condition) return -1;
+ 437   2              state->QUEUE[state->queueTail++] = condition;
+ 438   2              showData(condition);
+ 439   2              return 7;
+ 440   2          } else if (condition == '=') {
+ 441   2              statePushOperArray(state, 2);
+ 442   2              showData(condition);
+ 443   2              if (!stateLastCalculate(state)) return -1;
+ 444   2              if (!stateFirstCalculate(state)) return -1;
+ 445   2              stateToOutput(state);
+ 446   2              return 1;
+ 447   2          } else if (condition == '(') {
+ 448   2              ++state->stackTail;
+ 449   2              resetStackNode(state->STACK + state->stackTail);
+ 450   2              showData(condition);
+ 451   2              return 9;
+ 452   2          } else if (condition == ')') {
+ 453   2              statePushOperArray(state, 2);
+ 454   2              if (!stateLastCalculate(state)) return -1;
+ 455   2              if (!stateFirstCalculate(state)) return -1;
+ 456   2              state->STACK[state->stackTail-1].operand[1] = state->STACK[state->stackTail].operand[0];
+ 457   2              --state->stackTail;
+ 458   2              showData(condition);
+ 459   2              return 3;
+ 460   2          } else return -1;
+ 461   1      }
+ 462          
+ 463          /**
+ 464           * * 状态动作函数9 [(]
+ 465           * @param state 状态指针
+ 466           * @param condition 新的字符
+ 467           */ 
+ 468          int action9(State_t state, unsigned char condition) {
+ 469   1          if (condition >= '0' && condition <= '9' && state->queueTail < MAX_QUEUE_LENGTH) {
+ 470   2              if (state->bef == ')') return -1;
+ 471   2              state->QUEUE[state->queueTail++] = condition;
+ 472   2              showData(condition);
+ 473   2              return 2;
+ 474   2          } else if (condition == '(') {
+ 475   2              ++state->stackTail;
+ 476   2              state->STACK[state->stackTail] = state->STACK[state->stackTail-1];
+ 477   2              showData(condition);
+ 478   2              return 9;
+ 479   2          } else if (condition == '.' || condition == '~') {
+ 480   2              if (state->QUEUE[0] == condition) return -1;
+ 481   2              state->QUEUE[state->queueTail++] = condition;
+ 482   2              showData(condition);
+ 483   2              return 9;
+ 484   2          }
+ 485   1          else return -1;
+ 486   1      }
+ 487          
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 9   
+
+ 488          /**
+ 489           * * 扫描独立键盘K值
+ 490           */ 
+ 491          int scanfK() {
+ 492   1              if (!K1) {
+ 493   2              delay100MS();
+ 494   2              while (!K1);
+ 495   2              return 1;
+ 496   2          } else if (!K2) {
+ 497   2              delay100MS();
+ 498   2              while (!K2);
+ 499   2              return 2;
+ 500   2          } else if (!K3) {
+ 501   2              delay100MS();
+ 502   2              while (!K3);
+ 503   2              return 3;
+ 504   2          } else if (!K4) {
+ 505   2              delay100MS();
+ 506   2              while (!K4);
+ 507   2              return 4;
+ 508   2          } else return 0;
+ 509   1      }
+ 510          
+ 511          /**
+ 512           * * 扫描键盘并读取字符
+ 513           * @param machine 状态机指针
+ 514           * @param var 字符指针
+ 515           */ 
+ 516          void scanf_matrix_keyboard(StateMachine_t machine, uchar*var) {
+ 517   1          uchar temp;
+ 518   1          int q = 1, K_res;
+ 519   1          temp = q;
+ 520   1          q = 0;
+ 521   1          while (1) {
+ 522   2              P3 = 0xff;
+ 523   2      
+ 524   2              if ((K_res = scanfK()) && K_res) { // * 监测到独立键盘有按键
+ 525   3                  *var = "()~\0"[K_res-1];
+ 526   3                  if (!*var) {
+ 527   4                      resetStateMachine(machine);
+ 528   4                      *var = 0xff;
+ 529   4                  }
+ 530   3                  break;
+ 531   3              }
+ 532   2      
+ 533   2              P3 = 0x0f;
+ 534   2              if (P3 != 0x0f) { // * 矩阵键盘有按键
+ 535   3                  delay100MS();
+ 536   3                  temp = P3;
+ 537   3                  P3 = 0xf0;
+ 538   3                  if (P3 != 0xf0) {
+ 539   4                      *var = temp | P3;
+ 540   4                      for (q = 0; q < 16; q++) if (*var == KEY_CODE[q]) { 
+ 541   5                          *var = ops[q];
+ 542   5                          break;
+ 543   5                      }
+ 544   4                      break;
+ 545   4                  }
+ 546   3              }
+ 547   2          }
+ 548   1      }
+ 549          
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 10  
+
+ 550          /**
+ 551           * * 延时5ms
+ 552           */ 
+ 553          void delay5MS() {
+ 554   1          int n = 3000;
+ 555   1          while (n--);
+ 556   1      }
+ 557          
+ 558          /**
+ 559           * * 延时100ms
+ 560           */ 
+ 561          void delay100MS() {
+ 562   1          uint n = 8000;
+ 563   1          while (n--);
+ 564   1      }
+ 565          
+ 566          /**
+ 567           * * 写命令到LCD屏
+ 568           * @param com 命令字
+ 569           */ 
+ 570          void writeCMD(uchar com) {
+ 571   1          P0 = com;
+ 572   1          RS = 0;
+ 573   1          RW = 0;
+ 574   1          delay5MS();
+ 575   1          EN = 1;
+ 576   1          delay5MS();
+ 577   1          EN = 0;
+ 578   1      }
+ 579          
+ 580          /**
+ 581           * * 写字符到LCD屏
+ 582           * @param dat 字符
+ 583           */ 
+ 584          void showData(uchar dat) {
+ 585   1          // EN = 1;
+ 586   1          RW = 1;
+ 587   1          RS = 0;
+ 588   1          if (P0 == 0x11) {
+ 589   2              writeCMD(0xC0);
+ 590   2          }
+ 591   1          P0 = dat;
+ 592   1          RS = 1;
+ 593   1          RW = 0;
+ 594   1          EN = 1;
+ 595   1          delay5MS();
+ 596   1          EN = 0;
+ 597   1      }
+ 598          
+ 599          /**
+ 600           * * 初始化
+ 601           */ 
+ 602          void init() {
+ 603   1          EN = 0;
+ 604   1          writeCMD(0x38);
+ 605   1          writeCMD(0x0e);
+ 606   1          writeCMD(0x06);
+ 607   1          writeCMD(0x01);
+ 608   1          writeCMD(0x80);
+ 609   1          initStateMachine(&machine, stateShowError);
+ 610   1          machine.actions[1] = action1;
+ 611   1          machine.actions[2] = action2;
+C51 COMPILER V9.55   MAIN                                                                  01/08/2021 10:22:16 PAGE 11  
+
+ 612   1          machine.actions[3] = action3;
+ 613   1          machine.actions[4] = action4;
+ 614   1          machine.actions[5] = action5;
+ 615   1          machine.actions[6] = action6;
+ 616   1          machine.actions[7] = action7;
+ 617   1          machine.actions[9] = action9;
+ 618   1      }
+ 619          
+ 620          /**
+ 621           * * 清屏
+ 622           */ 
+ 623          void clear() {
+ 624   1          EN = 0;
+ 625   1          writeCMD(0x01);
+ 626   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   6851    ----
+   CONSTANT SIZE    =     35    ----
+   XDATA SIZE       =    222     145
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =   ----    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
